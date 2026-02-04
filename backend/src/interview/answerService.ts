@@ -1,13 +1,22 @@
 import { sessionStore } from "./sessionStore";
-import { buildFollowUpPrompt, evaluateAnswer } from "../utils";
+import {
+  buildFollowUpPrompt,
+  buildNewQuestionPrompt,
+  evaluateAnswer,
+} from "../utils";
 import { ollamaChat } from "../ai/ollama";
 import { createSession, insertMessage } from "../db/messageRepository";
+import { AnswerEvaluation } from "../types";
+
+const TOTAL_INTERVIEWER_TURNS = 10; // 5 main questions + 5 follow-ups
 
 export type ProcessAnswerResult = {
   success: true;
   sessionId: string;
-  content: string;
-  evaluation: any | null;
+  content: string | null;
+  evaluation: AnswerEvaluation | null;
+  interviewComplete?: boolean;
+  evaluations?: AnswerEvaluation[];
 };
 
 export type ProcessAnswerError = {
@@ -65,18 +74,51 @@ export async function processAnswer(
     evaluation: evaluation ?? undefined,
   });
 
-  // Generate follow-up question
-  const prompt = buildFollowUpPrompt(session.resumeContent, session.history);
-  const followUp = await ollamaChat(prompt);
+  const interviewerCount = session.history.filter(
+    (t) => t.role === "INTERVIEWER"
+  ).length;
 
-  // Update session history with interviewer follow-up
+  if (interviewerCount >= TOTAL_INTERVIEWER_TURNS) {
+    // Interview complete - no more questions
+    await sessionStore.set(sessionId, session);
+    await createSession(sessionId);
+
+    const candidateSeq = session.history.length - 1;
+    await insertMessage(
+      sessionId,
+      "CANDIDATE",
+      answer,
+      candidateSeq,
+      evaluation ?? undefined
+    );
+
+    const evaluations = session.history
+      .filter((t) => t.role === "CANDIDATE" && t.evaluation)
+      .map((t) => t.evaluation!) as AnswerEvaluation[];
+
+    return {
+      success: true,
+      sessionId,
+      content: null,
+      evaluation: evaluation ?? null,
+      interviewComplete: true,
+      evaluations,
+    };
+  }
+
+  // Generate next question: follow-up (odd) or new question (even)
+  const isFollowUp = interviewerCount % 2 === 1;
+  const prompt = isFollowUp
+    ? buildFollowUpPrompt(session.resumeContent, session.history)
+    : buildNewQuestionPrompt(session.resumeContent, session.history);
+  const nextQuestion = await ollamaChat(prompt);
+
   session.history.push({
     role: "INTERVIEWER",
-    content: followUp,
+    content: nextQuestion,
   });
 
   await sessionStore.set(sessionId, session);
-
   await createSession(sessionId);
   const candidateSeq = session.history.length - 2;
   const interviewerSeq = session.history.length - 1;
@@ -87,12 +129,12 @@ export async function processAnswer(
     candidateSeq,
     evaluation ?? undefined
   );
-  await insertMessage(sessionId, "INTERVIEWER", followUp, interviewerSeq);
+  await insertMessage(sessionId, "INTERVIEWER", nextQuestion, interviewerSeq);
 
   return {
     success: true,
     sessionId,
-    content: followUp,
+    content: nextQuestion,
     evaluation: evaluation ?? null,
   };
 }

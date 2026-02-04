@@ -9,6 +9,8 @@ export const buildPrompt = (chunks: string[]) => {
     
     Ask ONE deep backend interview question.
     Focus on real-world experience and tradeoffs.
+
+    Output ONLY the interview question. No greeting, preamble, or explanation. Just the raw question.
     `;
 };
 

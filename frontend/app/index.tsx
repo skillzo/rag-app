@@ -24,6 +24,13 @@ import { useSocket } from "@/hooks/useSocket";
 
 const CHAT_BG = require("../assets/images/chat/whatsappbg.webp");
 
+function formatHeaderDate(date: Date): string {
+  const dayName = date.toLocaleDateString("en-US", { weekday: "short" });
+  const day = date.getDate();
+  const month = date.toLocaleDateString("en-US", { month: "short" });
+  return `${dayName}, ${day} ${month}`;
+}
+
 function formatTime(date: Date): string {
   const hours = date.getHours();
   const minutes = date.getMinutes();
@@ -40,9 +47,20 @@ interface Message {
   content: string;
 }
 
+interface AnswerEvaluation {
+  correctness: number;
+  depth: number;
+  clarity: number;
+  experience: number;
+  redFlags: string[];
+  feedback: string;
+}
+
 interface ResponseData {
   sessionId: string;
-  content: string;
+  content: string | null;
+  interviewComplete?: boolean;
+  evaluations?: AnswerEvaluation[];
 }
 
 export default function Index() {
@@ -53,51 +71,68 @@ export default function Index() {
   const [messageHistory, setMessageHistory] = useState<Message[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
+  const [interviewComplete, setInterviewComplete] = useState(false);
+  const [evaluations, setEvaluations] = useState<AnswerEvaluation[] | null>(
+    null
+  );
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const messageRefs = useRef<{ [key: string]: View | null }>({});
 
+  const startNewInterview = async () => {
+    try {
+      setIsWaitingForResponse(true);
+      const response = await fetch(`${COLORS.ENV.BACKEND_URL}/api/v1/start`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      setIsWaitingForResponse(false);
+      if (!response.ok) {
+        throw new Error("Failed to start interview");
+      }
+
+      const data = await response.json();
+      setSessionId(data.sessionId);
+      await AsyncStorage.setItem(COLORS.ENV.SESSION_ID_KEY, data.sessionId);
+      setInterviewComplete(false);
+      setEvaluations(null);
+
+      setMessageHistory([
+        {
+          id: "1",
+          createdAt: new Date(),
+          role: "INTERVIEWER",
+          content: data.content,
+        },
+      ]);
+    } catch (error) {
+      console.error("Error starting interview:", error);
+      setErrorMessage("Failed to start interview. Please try again.");
+    }
+  };
+
+  const handleRestart = async () => {
+    await AsyncStorage.removeItem(COLORS.ENV.SESSION_ID_KEY);
+    setSessionId(null);
+    setMessageHistory([]);
+    setInterviewComplete(false);
+    setEvaluations(null);
+    setErrorMessage(null);
+    setMessages("");
+    await startNewInterview();
+  };
+
   // Initialize session on mount: try get-session first, else start new interview
   useEffect(() => {
-    const startInterview = async () => {
-      try {
-        setIsWaitingForResponse(true);
-        const response = await fetch(`${COLORS.ENV.BACKEND_URL}/api/v1/start`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-        setIsWaitingForResponse(false);
-        if (!response.ok) {
-          throw new Error("Failed to start interview");
-        }
-
-        const data = await response.json();
-        setSessionId(data.sessionId);
-        await AsyncStorage.setItem(COLORS.ENV.SESSION_ID_KEY, data.sessionId);
-
-        setMessageHistory([
-          {
-            id: "1",
-            createdAt: new Date(),
-            role: "INTERVIEWER",
-            content: data.content,
-          },
-        ]);
-      } catch (error) {
-        console.error("Error starting interview:", error);
-        setErrorMessage("Failed to start interview. Please try again.");
-      }
-    };
-
     const initSession = async () => {
       try {
         const storedSessionId = await AsyncStorage.getItem(
           COLORS.ENV.SESSION_ID_KEY
         );
         if (!storedSessionId) {
-          startInterview();
+          startNewInterview();
           return;
         }
 
@@ -106,29 +141,51 @@ export default function Index() {
         );
         if (response.status === 404) {
           await AsyncStorage.removeItem(COLORS.ENV.SESSION_ID_KEY);
-          startInterview();
+          startNewInterview();
           return;
         }
         if (!response.ok) {
-          startInterview();
+          startNewInterview();
           return;
         }
 
         const data = await response.json();
         setSessionId(data.sessionId);
-        setMessageHistory(
-          data.history.map(
-            (turn: { role: string; content: string }, i: number) => ({
-              id: (i + 1).toString(),
-              createdAt: new Date(),
-              role: turn.role,
-              content: turn.content,
-            })
-          )
+        const history = data.history.map(
+          (
+            turn: {
+              role: string;
+              content: string;
+              evaluation?: AnswerEvaluation;
+            },
+            i: number
+          ) => ({
+            id: (i + 1).toString(),
+            createdAt: new Date(),
+            role: turn.role,
+            content: turn.content,
+          })
         );
+        setMessageHistory(history);
+
+        const interviewerCount = data.history.filter(
+          (t: { role: string }) => t.role === "INTERVIEWER"
+        ).length;
+        const lastIsCandidate =
+          data.history[data.history.length - 1]?.role === "CANDIDATE";
+        if (interviewerCount === 10 && lastIsCandidate) {
+          setInterviewComplete(true);
+          const evals = data.history
+            .filter(
+              (t: { role: string; evaluation?: AnswerEvaluation }) =>
+                t.role === "CANDIDATE" && t.evaluation
+            )
+            .map((t: { evaluation: AnswerEvaluation }) => t.evaluation);
+          setEvaluations(evals);
+        }
       } catch (error) {
         console.error("Error loading session:", error);
-        startInterview();
+        startNewInterview();
       }
     };
 
@@ -182,15 +239,23 @@ export default function Index() {
     if (!socket) return;
 
     const handleResponse = (data: ResponseData) => {
-      setMessageHistory((prev) => [
-        ...prev,
-        {
-          id: (prev.length + 1).toString(),
-          createdAt: new Date(),
-          role: "INTERVIEWER",
-          content: data.content,
-        },
-      ]);
+      if (data.interviewComplete) {
+        setInterviewComplete(true);
+        setEvaluations(data.evaluations ?? null);
+        return;
+      }
+      if (data.content != null) {
+        const content = data.content;
+        setMessageHistory((prev) => [
+          ...prev,
+          {
+            id: (prev.length + 1).toString(),
+            createdAt: new Date(),
+            role: "INTERVIEWER",
+            content,
+          },
+        ]);
+      }
     };
 
     const handleError = (data: { message: string }) => {
@@ -290,10 +355,8 @@ export default function Index() {
             </View>
 
             <View className="flex-row gap-4">
-              <TouchableOpacity>
-                <Text className="text-2xl">
-                  <Feather name="repeat" size={24} color="black" />
-                </Text>
+              <TouchableOpacity onPress={handleRestart}>
+                <Feather name="repeat" size={24} color="black" />
               </TouchableOpacity>
             </View>
           </View>
@@ -309,7 +372,9 @@ export default function Index() {
           >
             <View className="items-center py-2">
               <View className="bg-gray-200/80 px-3 py-1 rounded-full">
-                <Text className="text-gray-600 text-sm">Thu, 22 Jan</Text>
+                <Text className="text-gray-600 text-sm">
+                  {formatHeaderDate(new Date())}
+                </Text>
               </View>
             </View>
             {messageHistory.map((msg: Message) => {
@@ -360,6 +425,65 @@ export default function Index() {
                 </View>
               </View>
             )}
+
+            {/* Evaluation Summary */}
+            {interviewComplete && evaluations && evaluations.length > 0 && (
+              <View className="mt-4 mb-6 px-2">
+                <View className="bg-white rounded-xl p-4 border border-gray-200">
+                  <Text className="font-semibold text-gray-900 text-lg mb-3">
+                    Interview Complete
+                  </Text>
+                  <Text className="text-gray-600 text-sm mb-4">
+                    Your evaluation summary
+                  </Text>
+                  {evaluations.map((evaluation, index) => (
+                    <View
+                      key={index}
+                      className="mb-4 pb-4 border-b border-gray-100 last:border-0 last:mb-0 last:pb-0"
+                    >
+                      <Text className="font-medium text-gray-800 mb-2">
+                        Answer {index + 1}
+                      </Text>
+                      <View className="flex-row flex-wrap gap-2 mb-2">
+                        <Text className="text-gray-600 text-sm">
+                          Correctness: {evaluation.correctness}/5
+                        </Text>
+                        <Text className="text-gray-600 text-sm">
+                          Depth: {evaluation.depth}/5
+                        </Text>
+                        <Text className="text-gray-600 text-sm">
+                          Clarity: {evaluation.clarity}/5
+                        </Text>
+                        <Text className="text-gray-600 text-sm">
+                          Experience: {evaluation.experience}/5
+                        </Text>
+                      </View>
+                      {evaluation.redFlags?.length > 0 && (
+                        <View className="mb-1">
+                          <Text className="text-red-600 text-xs font-medium">
+                            Red flags:
+                          </Text>
+                          <Text className="text-red-600 text-xs">
+                            {evaluation.redFlags.join(", ")}
+                          </Text>
+                        </View>
+                      )}
+                      <Text className="text-gray-700 text-sm">
+                        {evaluation.feedback}
+                      </Text>
+                    </View>
+                  ))}
+                  <TouchableOpacity
+                    onPress={handleRestart}
+                    className="mt-4 bg-w-green py-3 rounded-lg items-center"
+                  >
+                    <Text className="text-white font-medium">
+                      Restart Interview
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
           </ScrollView>
 
           {errorMessage && (
@@ -368,48 +492,50 @@ export default function Index() {
             </View>
           )}
 
-          {/* Input bar - sits above keyboard */}
-          <View className="bg-gray-100 flex-row items-end px-2 py-2 gap-2">
-            <TouchableOpacity className="w-10 h-10 rounded-full bg-gray-300 items-center justify-center">
-              <Text className="text-gray-600 text-xl">+</Text>
-            </TouchableOpacity>
+          {/* Input bar - hide when interview complete */}
+          {!interviewComplete && (
+            <View className="bg-gray-100 flex-row items-end px-2 py-2 gap-2">
+              <TouchableOpacity className="w-10 h-10 rounded-full bg-gray-300 items-center justify-center">
+                <Text className="text-gray-600 text-xl">+</Text>
+              </TouchableOpacity>
 
-            <TextInput
-              className="flex-1 bg-white rounded-2xl px-4 py-2.5 text-base max-h-24"
-              placeholder="Message"
-              placeholderTextColor="#999"
-              multiline
-              value={messages}
-              onChangeText={handleStartTyping}
-            />
+              <TextInput
+                className="flex-1 bg-white rounded-2xl px-4 py-2.5 text-base max-h-24"
+                placeholder="Message"
+                placeholderTextColor="#999"
+                multiline
+                value={messages}
+                onChangeText={handleStartTyping}
+              />
 
-            <View className="fcc">
-              {messages.length > 0 && !isWaitingForResponse && (
-                <TouchableOpacity
-                  className="w-9 h-9 fcc rounded-full bg-w-green"
-                  onPress={handleSendMessage}
-                  disabled={!isConnected || !sessionId}
-                >
-                  <MaterialIcons
-                    name="send"
-                    size={21}
-                    color="white"
-                    style={{ marginLeft: 5 }}
-                  />
-                </TouchableOpacity>
-              )}
+              <View className="fcc">
+                {messages.length > 0 && !isWaitingForResponse && (
+                  <TouchableOpacity
+                    className="w-9 h-9 fcc rounded-full bg-w-green"
+                    onPress={handleSendMessage}
+                    disabled={!isConnected || !sessionId}
+                  >
+                    <MaterialIcons
+                      name="send"
+                      size={21}
+                      color="white"
+                      style={{ marginLeft: 5 }}
+                    />
+                  </TouchableOpacity>
+                )}
 
-              {messages.length < 1 && !isWaitingForResponse && (
-                <TouchableOpacity className="w-9 h-9 fcc">
-                  <Ionicons
-                    name="mic-outline"
-                    size={24}
-                    color={COLORS.BASE_COLOR.WBLUE}
-                  />
-                </TouchableOpacity>
-              )}
+                {messages.length < 1 && !isWaitingForResponse && (
+                  <TouchableOpacity className="w-9 h-9 fcc">
+                    <Ionicons
+                      name="mic-outline"
+                      size={24}
+                      color={COLORS.BASE_COLOR.WBLUE}
+                    />
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
-          </View>
+          )}
         </View>
       </KeyboardAvoidingView>
 

@@ -81,6 +81,8 @@ router.post("/api/v1/answer", async (req, res) => {
       sessionId: result.sessionId,
       content: result.content,
       evaluation: result.evaluation,
+      interviewComplete: result.interviewComplete,
+      evaluations: result.evaluations,
     });
   } catch (err) {
     console.error("Error in /api/v1/answer:", err);
@@ -168,6 +170,8 @@ io.on("connection", (socket) => {
         sessionId: result.sessionId,
         content: result.content,
         evaluation: result.evaluation,
+        interviewComplete: result.interviewComplete,
+        evaluations: result.evaluations,
       });
     } catch (err) {
       console.error("Error handling message:", err);

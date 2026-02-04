@@ -29,6 +29,30 @@ export function buildFollowUpPrompt(
     - Ask ONE follow-up question
     - Go deeper into the candidate’s last answer
     - Do NOT introduce a new topic
+
+  Output ONLY the follow-up question. No greeting, preamble, or explanation. Just the raw question.
+  `;
+}
+
+export function buildNewQuestionPrompt(
+  resumeContext: string[],
+  history: InterviewTurn[]
+) {
+  const recentHistory = getRecentHistory(history, 6);
+
+  return `
+  You are a senior backend interviewer conducting an interview.
+
+  Candidate resume:
+  ${resumeContext.join("\n---\n")}
+
+  Conversation so far:
+  ${recentHistory.map((turn) => `${turn.role}: ${turn.content}`).join("\n")}
+
+  The candidate just answered a follow-up. Now ask ONE new main question on a different topic.
+  Pick a new backend area not yet covered. Focus on real-world experience and tradeoffs.
+
+  Output ONLY the interview question. No greeting, preamble, or explanation. Just the raw question.
   `;
 }
 
