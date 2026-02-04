@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .br {
+    @apply border border-red-500;
+  }
+  .fcc {
+    @apply flex-row justify-center items-center;
+  }
+  .fc {
+    @apply flex-row items-center;
+  }
+  .fbc {
+    @apply flex-row justify-between items-center;
+  }
+  .br {
+    @apply border border-red-500;
+  }
+}
