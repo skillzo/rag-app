@@ -1,6 +1,7 @@
 import { sessionStore } from "./sessionStore";
 import { buildFollowUpPrompt, evaluateAnswer } from "../utils";
 import { ollamaChat } from "../ai/ollama";
+import { createSession, insertMessage } from "../db/messageRepository";
 
 export type ProcessAnswerResult = {
   success: true;
@@ -30,7 +31,7 @@ export async function processAnswer(
     };
   }
 
-  const session = sessionStore.get(sessionId);
+  const session = await sessionStore.get(sessionId);
   if (!session) {
     return {
       success: false,
@@ -73,6 +74,20 @@ export async function processAnswer(
     role: "INTERVIEWER",
     content: followUp,
   });
+
+  await sessionStore.set(sessionId, session);
+
+  await createSession(sessionId);
+  const candidateSeq = session.history.length - 2;
+  const interviewerSeq = session.history.length - 1;
+  await insertMessage(
+    sessionId,
+    "CANDIDATE",
+    answer,
+    candidateSeq,
+    evaluation ?? undefined
+  );
+  await insertMessage(sessionId, "INTERVIEWER", followUp, interviewerSeq);
 
   return {
     success: true,

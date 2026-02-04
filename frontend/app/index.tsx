@@ -3,7 +3,9 @@ import "../global.css";
 import {
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   Text,
   TextInput,
@@ -13,6 +15,8 @@ import {
 import Feather from "@expo/vector-icons/Feather";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import * as Clipboard from "expo-clipboard";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { COLORS } from "@/config";
 import { useEffect, useRef, useState } from "react";
@@ -49,26 +53,30 @@ export default function Index() {
   const [messageHistory, setMessageHistory] = useState<Message[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
+  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
+  const messageRefs = useRef<{ [key: string]: View | null }>({});
 
-  // Initialize session on mount
+  // Initialize session on mount: try get-session first, else start new interview
   useEffect(() => {
     const startInterview = async () => {
       try {
+        setIsWaitingForResponse(true);
         const response = await fetch(`${COLORS.ENV.BACKEND_URL}/api/v1/start`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
         });
-
+        setIsWaitingForResponse(false);
         if (!response.ok) {
           throw new Error("Failed to start interview");
         }
 
         const data = await response.json();
         setSessionId(data.sessionId);
+        await AsyncStorage.setItem(COLORS.ENV.SESSION_ID_KEY, data.sessionId);
 
-        // Add initial interviewer message to history
         setMessageHistory([
           {
             id: "1",
@@ -83,7 +91,48 @@ export default function Index() {
       }
     };
 
-    startInterview();
+    const initSession = async () => {
+      try {
+        const storedSessionId = await AsyncStorage.getItem(
+          COLORS.ENV.SESSION_ID_KEY
+        );
+        if (!storedSessionId) {
+          startInterview();
+          return;
+        }
+
+        const response = await fetch(
+          `${COLORS.ENV.BACKEND_URL}/api/v1/get-session?sessionId=${encodeURIComponent(storedSessionId)}`
+        );
+        if (response.status === 404) {
+          await AsyncStorage.removeItem(COLORS.ENV.SESSION_ID_KEY);
+          startInterview();
+          return;
+        }
+        if (!response.ok) {
+          startInterview();
+          return;
+        }
+
+        const data = await response.json();
+        setSessionId(data.sessionId);
+        setMessageHistory(
+          data.history.map(
+            (turn: { role: string; content: string }, i: number) => ({
+              id: (i + 1).toString(),
+              createdAt: new Date(),
+              role: turn.role,
+              content: turn.content,
+            })
+          )
+        );
+      } catch (error) {
+        console.error("Error loading session:", error);
+        startInterview();
+      }
+    };
+
+    initSession();
   }, []);
 
   const handleStartTyping = (e: string) => {
@@ -166,6 +215,39 @@ export default function Index() {
     scrollViewRef.current?.scrollToEnd({ animated: true });
   }, [messageHistory]);
 
+  const handleLongPress = (msg: Message) => {
+    const messageRef = messageRefs.current[msg.id];
+    if (messageRef) {
+      messageRef.measure((x, y, width, height, pageX, pageY) => {
+        const isOutgoing = msg.role === "CANDIDATE";
+        // Position menu below the message
+        // For outgoing messages (right-aligned), align menu to the right edge of message
+        // For incoming messages (left-aligned), align menu to the left edge
+        const menuWidth = 200;
+        const menuX = isOutgoing
+          ? Math.max(12, pageX + width - menuWidth) // Right-align for outgoing
+          : Math.min(pageX, 400); // Left-align for incoming, but keep within bounds
+
+        setMenuPosition({
+          x: menuX,
+          y: pageY + height + 8, // Position menu below the message
+        });
+        setSelectedMessage(msg);
+      });
+    }
+  };
+
+  const handleCopy = async () => {
+    if (selectedMessage) {
+      await Clipboard.setStringAsync(selectedMessage.content);
+      setSelectedMessage(null);
+    }
+  };
+
+  const closeMenu = () => {
+    setSelectedMessage(null);
+  };
+
   return (
     <View className="flex-1">
       <SafeAreaView edges={["top"]} />
@@ -233,11 +315,15 @@ export default function Index() {
             {messageHistory.map((msg: Message) => {
               const isOutgoing = msg.role === "CANDIDATE";
               return (
-                <View
+                <Pressable
                   key={msg.id}
+                  onLongPress={() => handleLongPress(msg)}
                   className={`mb-2 ${isOutgoing ? "items-end" : "items-start"}`}
                 >
                   <View
+                    ref={(ref) => {
+                      messageRefs.current[msg.id] = ref;
+                    }}
                     className="max-w-[80%] px-3 py-2 rounded-2xl"
                     style={{
                       borderBottomRightRadius: isOutgoing ? 4 : 16,
@@ -255,7 +341,7 @@ export default function Index() {
                       )}
                     </View>
                   </View>
-                </View>
+                </Pressable>
               );
             })}
 
@@ -328,6 +414,41 @@ export default function Index() {
       </KeyboardAvoidingView>
 
       <SafeAreaView edges={["bottom"]} className="bg-gray-100" />
+
+      {/* Context Menu Modal */}
+      <Modal
+        visible={selectedMessage !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeMenu}
+      >
+        <Pressable style={{ flex: 1 }} onPress={closeMenu}>
+          <View
+            style={{
+              position: "absolute",
+              top: menuPosition.y,
+              left: menuPosition.x,
+              backgroundColor: "white",
+              borderRadius: 12,
+              width: 200,
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.25,
+              shadowRadius: 8,
+              elevation: 5,
+            }}
+          >
+            {/* Copy */}
+            <TouchableOpacity
+              className="flex-row items-center justify-between px-4 py-3"
+              onPress={handleCopy}
+            >
+              <Text className="text-gray-900 text-base">Copy</Text>
+              <MaterialIcons name="content-copy" size={20} color="#6B7280" />
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }

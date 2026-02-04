@@ -5,5 +5,6 @@ export const COLORS = {
   },
   ENV: {
     BACKEND_URL: "http://192.168.1.187:8000",
+    SESSION_ID_KEY: "@rag_app_session_id",
   },
 };

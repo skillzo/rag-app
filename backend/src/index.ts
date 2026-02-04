@@ -10,6 +10,7 @@ import { ollamaEmbed } from "./ai/ollama";
 import { randomUUID } from "crypto";
 import { sessionStore } from "./interview/sessionStore";
 import { processAnswer } from "./interview/answerService";
+import { createSession, insertMessage } from "./db/messageRepository";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import cors from "cors";
@@ -44,7 +45,7 @@ router.post("/api/v1/start", async (req, res) => {
     const prompt = await askQuestion(embeddedQuestion);
 
     const sessionId = randomUUID();
-    sessionStore.set(sessionId, {
+    await sessionStore.set(sessionId, {
       id: sessionId,
       resumeContent: embeddedQuestion,
       history: [
@@ -54,6 +55,9 @@ router.post("/api/v1/start", async (req, res) => {
         },
       ],
     });
+
+    await createSession(sessionId);
+    await insertMessage(sessionId, "INTERVIEWER", prompt, 0);
 
     console.log("sessionId", sessionId);
 
@@ -93,7 +97,7 @@ router.get("/api/v1/get-history", async (req, res) => {
         .json({ error: "sessionId query param is required" });
     }
 
-    const session = sessionStore.get(sessionId);
+    const session = await sessionStore.get(sessionId);
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -103,6 +107,31 @@ router.get("/api/v1/get-history", async (req, res) => {
   } catch (err) {
     console.error("Error in /api/v1/get-history:", err);
     return res.status(500).json({ error: "Failed to get history" });
+  }
+});
+
+router.get("/api/v1/get-session", async (req, res) => {
+  try {
+    const sessionId = req.query.sessionId as string;
+    if (!sessionId) {
+      return res
+        .status(400)
+        .json({ error: "sessionId query param is required" });
+    }
+
+    const session = await sessionStore.get(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    return res.status(200).json({
+      sessionId: session.id,
+      content: session.history[session.history.length - 1].content,
+      history: session.history,
+    });
+  } catch (err) {
+    console.error("Error in /api/v1/get-session:", err);
+    return res.status(500).json({ error: "Failed to get session" });
   }
 });
 
